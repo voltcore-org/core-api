@@ -42,6 +42,22 @@ function rateAllow(ip: string): boolean {
   return true;
 }
 
+function requireSupabase(env: Env): Response | null {
+  if (!env.SUPABASE_URL) {
+    return json(
+      { error: "Config missing", detail: "SUPABASE_URL environment variable is required but not set" },
+      503,
+    );
+  }
+  if (!env.SUPABASE_SERVICE_ROLE_KEY) {
+    return json(
+      { error: "Config missing", detail: "SUPABASE_SERVICE_ROLE_KEY is required but not set" },
+      503,
+    );
+  }
+  return null;
+}
+
 function supabaseHeaders(env: Env, extra: Record<string, string> = {}): Record<string, string> {
   return {
     apikey: env.SUPABASE_SERVICE_ROLE_KEY,
@@ -62,6 +78,7 @@ async function insertEvent(
   env: Env,
   row: { source: string; event_type: string; severity: string; payload: unknown },
 ): Promise<void> {
+  if (requireSupabase(env)) return;
   const id = await tenantId(env);
   if (!id) return;
   await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
@@ -97,53 +114,58 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    if (request.method === "GET" && path === "/api/v1/events") {
-      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 100) || 100));
-      const source = (url.searchParams.get("source") || "").trim();
-      let qs = `select=id,created_at,source,event_type,severity,payload&order=created_at.desc&limit=${limit}`;
-      if (source) {
-        const parts = source.split(",").map((s) => s.trim()).filter(Boolean);
-        if (parts.length === 1) qs += `&source=eq.${encodeURIComponent(parts[0])}`;
-        else if (parts.length > 1) qs += `&source=in.(${parts.map(encodeURIComponent).join(",")})`;
-      }
-      try {
-        const dbRes = await fetch(`${env.SUPABASE_URL}/rest/v1/events?${qs}`, {
-          headers: supabaseHeaders(env),
-        });
-        if (!dbRes.ok) {
-          const errText = await dbRes.text();
-          return json({ error: "Query failed", detail: errText }, 500);
-        }
-        const events = await dbRes.json();
-        return json({ status: "ok", events, fetched_at: new Date().toISOString() }, 200);
-      } catch (err: any) {
-        return json({ error: "Query failed", detail: err.message }, 500);
-      }
-    }
+    if (path === "/api/v1/events") {
+      const cfg = requireSupabase(env);
+      if (cfg) return cfg;
 
-    if (request.method === "POST" && path === "/api/v1/events") {
-      try {
-        const payload = (await request.json()) as Record<string, any>;
-        const id = await tenantId(env);
-        if (!id) return json({ error: "Tenant missing" }, 500);
-        const dbRes = await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
-          method: "POST",
-          headers: supabaseHeaders(env, { "Content-Type": "application/json", Prefer: "return=minimal" }),
-          body: JSON.stringify({
-            tenant_id: id,
-            source: payload.source || "github",
-            event_type: payload.type || "deployment.event",
-            severity: payload.severity || "info",
-            payload: payload.payload || payload,
-          }),
-        });
-        if (!dbRes.ok) {
-          const errText = await dbRes.text();
-          return json({ error: "Ingestion failed", detail: errText }, 500);
+      if (request.method === "GET") {
+        const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 100) || 100));
+        const source = (url.searchParams.get("source") || "").trim();
+        let qs = `select=id,created_at,source,event_type,severity,payload&order=created_at.desc&limit=${limit}`;
+        if (source) {
+          const parts = source.split(",").map((s) => s.trim()).filter(Boolean);
+          if (parts.length === 1) qs += `&source=eq.${encodeURIComponent(parts[0])}`;
+          else if (parts.length > 1) qs += `&source=in.(${parts.map(encodeURIComponent).join(",")})`;
         }
-        return json({ status: "acknowledged", accepted: true }, 202);
-      } catch (err: any) {
-        return json({ error: "Malformed payload", detail: err.message }, 400);
+        try {
+          const dbRes = await fetch(`${env.SUPABASE_URL}/rest/v1/events?${qs}`, {
+            headers: supabaseHeaders(env),
+          });
+          if (!dbRes.ok) {
+            const errText = await dbRes.text();
+            return json({ error: "Query failed", detail: errText }, 500);
+          }
+          const events = await dbRes.json();
+          return json({ status: "ok", events, fetched_at: new Date().toISOString() }, 200);
+        } catch (err: any) {
+          return json({ error: "Query failed", detail: err.message }, 500);
+        }
+      }
+
+      if (request.method === "POST") {
+        try {
+          const payload = (await request.json()) as Record<string, any>;
+          const id = await tenantId(env);
+          if (!id) return json({ error: "Tenant missing" }, 500);
+          const dbRes = await fetch(`${env.SUPABASE_URL}/rest/v1/events`, {
+            method: "POST",
+            headers: supabaseHeaders(env, { "Content-Type": "application/json", Prefer: "return=minimal" }),
+            body: JSON.stringify({
+              tenant_id: id,
+              source: payload.source || "github",
+              event_type: payload.type || "deployment.event",
+              severity: payload.severity || "info",
+              payload: payload.payload || payload,
+            }),
+          });
+          if (!dbRes.ok) {
+            const errText = await dbRes.text();
+            return json({ error: "Ingestion failed", detail: errText }, 500);
+          }
+          return json({ status: "acknowledged", accepted: true }, 202);
+        } catch (err: any) {
+          return json({ error: "Malformed payload", detail: err.message }, 400);
+        }
       }
     }
 
