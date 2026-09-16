@@ -1,6 +1,8 @@
-name = "core-api"
+# STALE STUB. Do not deploy. Production Worker is personal core-api@433928b.
+name = "core-api-stale-stub-do-not-deploy"
 main = "index.ts"
 compatibility_date = "2026-09-01"
+workers_dev = false
 
-[vars]
-SUPABASE_URL = "https://tobjvhrfjmyzgidrccrz.supabase.co"
+# Intentionally no [triggers] crons. Heartbeats belong on the personal trunk.
+# Do not put production secrets here.
